@@ -1,0 +1,317 @@
+#version 430
+layout(local_size_x = 16, local_size_y = 16) in;
+
+layout(binding = 0, rgba32f) writeonly uniform image2D outImage;
+
+layout(std140, binding = 1) uniform Camera {
+    vec3 camPos;     float _pad0;
+    vec3 camRight;   float _pad1;
+    vec3 camUp;      float _pad2;
+    vec3 camForward; float _pad3;
+    float tanHalfFov;
+    float aspect;
+    float time;
+    float _pad4;
+} cam;
+
+layout(std140, binding = 2) uniform Disk {
+    float disk_inner;
+    float disk_outer;
+    float disk_num;
+    float disk_thickness;
+};
+
+layout(std140, binding = 3) uniform Objects {
+    int numObjects;
+    float _padObj[3];
+    vec4 objPosRadius[16];
+    vec4 objColor[16];
+    vec4 massVec[4];
+};
+
+// ============ Black Hole Parameters ============
+const float RS = 2.0;
+const float STEP = 0.15;
+const float MAX_DIST = 300.0;
+const int MAX_STEPS = 2000;
+
+// ============ Noise Functions ============
+float hash(float n) { return fract(sin(n) * 43758.5453123); }
+float hash2(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+
+float noise(vec2 p) {
+    vec2 i = floor(p);
+    vec2 f = fract(p);
+    f = f * f * (3.0 - 2.0 * f); // smoothstep
+    float a = hash2(i);
+    float b = hash2(i + vec2(1.0, 0.0));
+    float c = hash2(i + vec2(0.0, 1.0));
+    float d = hash2(i + vec2(1.0, 1.0));
+    return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
+}
+
+float fbm(vec2 p) {
+    float v = 0.0;
+    float a = 0.5;
+    for (int i = 0; i < 4; i++) {
+        v += a * noise(p);
+        p *= 2.1;
+        a *= 0.5;
+    }
+    return v;
+}
+
+// ============ Procedural Starfield ============
+vec3 starColor(vec3 dir) {
+    float h1 = fract(sin(dot(floor(dir * 300.0), vec3(12.9898, 78.233, 45.164))) * 43758.5453);
+    float h2 = fract(sin(dot(floor(dir * 300.0), vec3(93.989, 67.345, 18.456))) * 23421.6312);
+    float brightness = smoothstep(0.992, 1.0, h1);
+    vec3 sColor = mix(vec3(0.8, 0.85, 1.0), vec3(1.0, 0.9, 0.7), h2);
+    return sColor * brightness * 1.5;
+}
+
+// ============ 3D Spacetime Fabric (Gravity Well) ============
+// The fabric is a flat grid plane that dips down near the black hole
+// like a rubber sheet stretched by a heavy mass.
+
+const float FABRIC_Y_BASE = -10.0;    // Base height of the fabric (well below the disk at y=0)
+const float WELL_DEPTH = 15.0;         // How deep the gravity well goes
+const float WELL_RADIUS = 1.2;         // Controls width of the well
+const float GRID_SPACING = 2.0;       // Grid cell size
+const float GRID_LINE_WIDTH = 0.06;   // Grid line thickness
+const float FABRIC_EXTENT = 80.0;     // How far the fabric extends
+
+// Height of the spacetime fabric at (x, z)
+float fabricHeight(float x, float z) {
+    float r = length(vec2(x, z));
+    // Gravity well: smooth funnel shape
+    return FABRIC_Y_BASE - WELL_DEPTH / (r * WELL_RADIUS + 0.5);
+}
+
+// Returns grid color if ray hits the fabric, black + alpha=0 if miss
+vec4 intersectFabric(vec3 ro, vec3 rd) {
+    // March along the ray to find intersection with the curved surface
+    float t = 0.0;
+    float maxT = 200.0;
+    
+    for (int i = 0; i < 300; i++) {
+        vec3 p = ro + rd * t;
+
+        // Skip if too far from center (outside fabric)
+        if (abs(p.x) > FABRIC_EXTENT || abs(p.z) > FABRIC_EXTENT) {
+            t += 2.0;
+            if (t > maxT) break;
+            continue;
+        }
+
+        float surfaceY = fabricHeight(p.x, p.z);
+        float dist = p.y - surfaceY;
+        
+        // Hit the surface
+        if (dist < 0.02 && dist > -0.5) {
+            // Compute grid lines based on world x,z
+            float gx = abs(mod(p.x + GRID_SPACING * 0.5, GRID_SPACING) - GRID_SPACING * 0.5);
+            float gz = abs(mod(p.z + GRID_SPACING * 0.5, GRID_SPACING) - GRID_SPACING * 0.5);
+            
+            float lineX = 1.0 - smoothstep(0.0, GRID_LINE_WIDTH, gx);
+            float lineZ = 1.0 - smoothstep(0.0, GRID_LINE_WIDTH, gz);
+            float grid = max(lineX, lineZ);
+            
+            // Color by depth: blue-white on surface, orange-red in the well
+            float r_dist = length(vec2(p.x, p.z));
+            float depth = clamp(-dist / WELL_DEPTH, 0.0, 1.0);
+            float wellFactor = clamp(1.0 - r_dist / 20.0, 0.0, 1.0);
+            
+            // Grid line color: transitions from cool blue to warm orange near the well
+            vec3 farColor = vec3(0.15, 0.25, 0.7);    // Blue far from BH
+            vec3 nearColor = vec3(0.9, 0.4, 0.1);      // Orange near BH
+            vec3 lineColor = mix(farColor, nearColor, wellFactor);
+            
+            // Surface background: very dark, slightly tinted
+            vec3 bgColor = vec3(0.02, 0.02, 0.04);
+            
+            // Final fabric color
+            vec3 color = mix(bgColor, lineColor, grid * 0.9);
+            
+            // Add subtle surface glow near the well
+            color += nearColor * wellFactor * 0.08;
+            
+            // Fade out at edges
+            float edgeFade = 1.0 - smoothstep(FABRIC_EXTENT * 0.6, FABRIC_EXTENT, max(abs(p.x), abs(p.z)));
+            
+            return vec4(color * edgeFade, 1.0);
+        }
+        
+        // Adaptive step size
+        t += max(abs(dist) * 0.5, 0.1);
+        if (t > maxT) break;
+    }
+    
+    return vec4(0.0); // No hit
+}
+
+// ============ Animated Accretion Disk ============
+vec3 diskColor(float r, float angle) {
+    float t = clamp((r - disk_inner) / (disk_outer - disk_inner), 0.0, 1.0);
+    float temp = 1.0 - t; // 1.0 at inner edge, 0.0 at outer
+
+    // Keplerian orbital velocity (optimized pow 1.5)
+    float orbitalSpeed = 4.0 / (r * sqrt(r));
+    float rotatedAngle = angle + cam.time * orbitalSpeed;
+
+    // Smooth, broad spiral arms (seamless because 3.0*2pi = 6pi which wraps for sin)
+    float spiralArms = sin(rotatedAngle * 3.0 - r * 0.8) * 0.5 + 0.5;
+    spiralArms = pow(spiralArms, 2.0) * 0.6;
+
+    // Angular noise for swirling dust effect
+    // We convert back to Cartesian coordinates (scaled by r) to sample the noise
+    // so it perfectly, seamlessly wraps around the entire 360 disk without a sudden seam!
+    vec2 noiseCoord = vec2(cos(rotatedAngle), sin(rotatedAngle)) * r * 0.8;
+    float turb = fbm(noiseCoord);
+
+    // Bright orbiting matter clumps
+    float clumps = 0.0;
+    float diskRange = (disk_outer - disk_inner) * 0.8;
+    for (float i = 0.0; i < 12.0; i++) {
+        float clumpAngle = hash(i * 17.3) * 6.2831;
+        float clumpR = disk_inner + hash(i * 31.7) * diskRange;
+        float clumpSpeed = 4.0 / (clumpR * sqrt(clumpR)); // Optimized pow 1.5
+        float cA = clumpAngle + cam.time * clumpSpeed;
+        float dA = abs(mod(rotatedAngle - cA + 3.14159, 6.28318) - 3.14159);
+        float dR = abs(r - clumpR);
+        float glow = exp(-dA * dA * 15.0 - dR * dR * 5.0);
+        float trail = exp(-max(mod(rotatedAngle - cA, 6.28318), 0.0) * 1.5 - dR * dR * 8.0) * 0.6;
+        clumps += glow * 2.5 + trail;
+    }
+
+    // Blackbody-like color gradient
+    vec3 hot  = vec3(1.0, 1.0, 0.95);
+    vec3 warm = vec3(1.0, 0.65, 0.15);
+    vec3 cool = vec3(0.5, 0.12, 0.02);
+
+    vec3 c;
+    if (temp > 0.5) {
+        c = mix(warm, hot, (temp - 0.5) * 2.0);
+    } else {
+        c = mix(cool, warm, temp * 2.0);
+    }
+
+    // Combine features for flowing, structured rotation
+    float brightness = pow(temp, 0.5) * 1.5 + 0.1;
+    float structure = 0.5 + spiralArms * 0.3 + turb * 0.4 + clumps;
+
+    return c * brightness * structure;
+}
+
+// ============ Ray Deflection ============
+const float BEND_FACTOR = 1.5 * RS * RS;
+
+void stepRay(inout vec3 pos, inout vec3 dir, float h, float r) {
+    if (r < 0.001) return;
+    vec3 n = pos / r;
+    // BEND_FACTOR is pre-squared RS avoiding duplicates
+    float bend = BEND_FACTOR / (r * r * r);
+    vec3 accel = -n * bend;
+    dir = normalize(dir + accel * h);
+    pos += dir * h;
+}
+
+void main() {
+    ivec2 size = imageSize(outImage);
+    ivec2 pix = ivec2(gl_GlobalInvocationID.xy);
+    if (pix.x >= size.x || pix.y >= size.y) return;
+
+    float u = (2.0 * (float(pix.x) + 0.5) / float(size.x) - 1.0) * cam.aspect * cam.tanHalfFov;
+    float v = (1.0 - 2.0 * (float(pix.y) + 0.5) / float(size.y)) * cam.tanHalfFov;
+    vec3 dir = normalize(u * cam.camRight - v * cam.camUp + cam.camForward);
+    vec3 pos = cam.camPos;
+
+    vec4 finalColor = vec4(0.0, 0.0, 0.0, 0.0);
+    float totalDist = 0.0;
+    bool hitDisk = false;
+    bool hitBH = false;
+    bool escaped = false;
+
+    for (int i = 0; i < MAX_STEPS; i++) {
+        float r = length(pos);
+
+        if (r <= RS) {
+            hitBH = true;
+            break;
+        }
+
+        // Adaptive step: larger steps far from black hole, tiny steps near Event Horizon
+        float h = STEP * clamp(r / RS - 1.0, 0.1, 8.0);
+        vec3 prevPos = pos;
+        stepRay(pos, dir, h, r);
+        totalDist += h;
+
+        // Accretion disk check - Exact Plane Crossing Detection
+        if (prevPos.y * pos.y <= 0.0) { // Ray crossed or touched the Y=0 plane
+            // Linear interpolation to find precise intersection point
+            float t = abs(prevPos.y) / (abs(prevPos.y) + abs(pos.y) + 1e-6);
+            vec3 hitPos = mix(prevPos, pos, t);
+            
+            float cr = length(vec2(hitPos.x, hitPos.z));
+
+            if (cr >= disk_inner && cr <= disk_outer) {
+                float angle = atan(hitPos.z, hitPos.x);
+                vec3 dColor = diskColor(cr, angle);
+
+                // Gravitational redshift (darkens inner edge)
+                float redshift = sqrt(max(1.0 - RS / max(cr, RS + 0.01), 0.0));
+                dColor *= redshift;
+
+                // Doppler beaming (brightens approaching matter)
+                vec3 orbitalVel = normalize(vec3(-sin(angle), 0.0, cos(angle)));
+                vec3 toCam = normalize(cam.camPos - hitPos);
+                float doppler = 1.0 + 0.35 * dot(orbitalVel, toCam); // slightly stronger doppler
+                dColor *= doppler;
+
+                // Soft alpha falloff for inner and outer edges (feathering)
+                // Fades out over 0.5 units on the inside, and 3.0 units on the outside
+                float fadeInner = smoothstep(disk_inner, disk_inner + 0.5, cr);
+                float fadeOuter = smoothstep(disk_outer, disk_outer - 3.0, cr);
+                float alpha = fadeInner * fadeOuter;
+
+                // Front-to-back alpha compositing
+                finalColor.rgb += dColor * alpha * (1.0 - finalColor.a);
+                finalColor.a += alpha * (1.0 - finalColor.a);
+
+                hitDisk = true;
+                
+                // If the accumulated color is fully opaque, we can stop early
+                if (finalColor.a > 0.99) {
+                    break;
+                }
+            }
+        }
+
+        if (r > MAX_DIST) {
+            escaped = true;
+            break;
+        }
+    }
+
+    if (hitBH && finalColor.a < 0.99) {
+        // Hit black hole, but we might have passed through a transparent part of the disk first
+        finalColor.rgb += vec3(0.0) * (1.0 - finalColor.a);
+        finalColor.a = 1.0; // Black hole is opaque
+    } else if (!hitBH && escaped) {
+        // Stars + transparent background so rasterized grid shows through
+        vec3 stars = starColor(dir);
+        float starAlpha = max(max(stars.r, stars.g), stars.b);
+        
+        // Blend remaining transparency with background
+        finalColor.rgb += stars * (1.0 - finalColor.a);
+        
+        // Final alpha for grid blending is based on star brightness + accumulated disk alpha
+        finalColor.a = finalColor.a + clamp(starAlpha * 2.0, 0.0, 1.0) * (1.0 - finalColor.a);
+    }
+
+    // Tone mapping
+    finalColor.rgb = finalColor.rgb / (finalColor.rgb + vec3(1.0));
+    finalColor.rgb = pow(finalColor.rgb, vec3(1.0 / 2.2));
+
+    imageStore(outImage, pix, finalColor);
+}
