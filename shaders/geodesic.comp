@@ -17,20 +17,11 @@ layout(std140, binding = 1) uniform Camera {
 layout(std140, binding = 2) uniform Disk {
     float disk_inner;
     float disk_outer;
-    float disk_num;
+    float schwarzschildRadius;
     float disk_thickness;
 };
 
-layout(std140, binding = 3) uniform Objects {
-    int numObjects;
-    float _padObj[3];
-    vec4 objPosRadius[16];
-    vec4 objColor[16];
-    vec4 massVec[4];
-};
-
 // ============ Black Hole Parameters ============
-const float RS = 2.0;
 const float STEP = 0.15;
 const float MAX_DIST = 300.0;
 const int MAX_STEPS = 2000;
@@ -199,18 +190,20 @@ vec3 diskColor(float r, float angle) {
     // Combine features for flowing, structured rotation
     float brightness = pow(temp, 0.5) * 1.5 + 0.1;
     float structure = 0.5 + spiralArms * 0.3 + turb * 0.4 + clumps;
+    float denom = max(disk_outer, disk_inner + 1e-4);
+    float iscoOuter = max(1.0 - sqrt(disk_inner / denom), 1e-4);
+    float iscoFactor = max(1.0 - sqrt(disk_inner / max(r, disk_inner + 1e-4)), 0.0) / iscoOuter;
+    iscoFactor = clamp(iscoFactor, 0.0, 1.0);
 
-    return c * brightness * structure;
+    return c * brightness * structure * iscoFactor;
 }
 
 // ============ Ray Deflection ============
-const float BEND_FACTOR = 1.5 * RS * RS;
-
-void stepRay(inout vec3 pos, inout vec3 dir, float h, float r) {
+void stepRay(inout vec3 pos, inout vec3 dir, float h, float r, float rs) {
     if (r < 0.001) return;
     vec3 n = pos / r;
-    // BEND_FACTOR is pre-squared RS avoiding duplicates
-    float bend = BEND_FACTOR / (r * r * r);
+    float bendFactor = 1.5 * rs * rs;
+    float bend = bendFactor / (r * r * r);
     vec3 accel = -n * bend;
     dir = normalize(dir + accel * h);
     pos += dir * h;
@@ -231,19 +224,20 @@ void main() {
     bool hitDisk = false;
     bool hitBH = false;
     bool escaped = false;
+    float rs = max(schwarzschildRadius, 0.001);
 
     for (int i = 0; i < MAX_STEPS; i++) {
         float r = length(pos);
 
-        if (r <= RS) {
+        if (r <= rs) {
             hitBH = true;
             break;
         }
 
         // Adaptive step: larger steps far from black hole, tiny steps near Event Horizon
-        float h = STEP * clamp(r / RS - 1.0, 0.1, 8.0);
+        float h = STEP * clamp(r / rs - 1.0, 0.1, 8.0);
         vec3 prevPos = pos;
-        stepRay(pos, dir, h, r);
+        stepRay(pos, dir, h, r, rs);
         totalDist += h;
 
         // Accretion disk check - Exact Plane Crossing Detection
@@ -259,7 +253,7 @@ void main() {
                 vec3 dColor = diskColor(cr, angle);
 
                 // Gravitational redshift (darkens inner edge)
-                float redshift = sqrt(max(1.0 - RS / max(cr, RS + 0.01), 0.0));
+                float redshift = sqrt(max(1.0 - rs / max(cr, rs + 0.01), 0.0));
                 dColor *= redshift;
 
                 // Doppler beaming (brightens approaching matter)

@@ -15,6 +15,10 @@ public:
 
     bool init();
     void render(Scene* scene, const glm::mat4& view, const glm::mat4& projection);
+    void setBlackHoleGridEnabled(bool enabled);
+    bool isBlackHoleGridEnabled() const;
+    void setVsyncEnabled(bool enabled);
+    bool isVsyncEnabled() const;
     
 private:
     GLuint shaderProgram;
@@ -27,7 +31,6 @@ private:
     // UBOs for Compute Shader
     GLuint cameraUBO;
     GLuint diskUBO;
-    GLuint objectsUBO;
 
     // For trails
     GLuint VAO, VBO;
@@ -44,16 +47,26 @@ private:
     GLuint gwGridVAO = 0, gwGridVBO = 0, gwGridEBO = 0;
     GLuint gwGridProgram = 0;
     int gwGridIndexCount = 0;
+    bool blackHoleGridEnabled = false;
+    bool vsyncEnabled = false;
 
-    void setupShaders();
-    void setupComputeShader();
-    void setupQuad();
-    void setupGravityWellGrid();
+    bool setupShaders();
+    bool setupComputeShader();
+    bool setupQuad();
+    bool setupGravityWellGrid();
     void generateGravityWellGrid(Scene* scene);
     void drawGravityWellGrid(const glm::mat4& view, const glm::mat4& projection);
     void updateComputeUBOs(Scene* scene, const glm::mat4& view, const glm::mat4& projection);
     void setupBuffers();
     void buildGrid();
+
+    void drawTrailsAndBodies(
+        Scene* scene,
+        const glm::mat4& view,
+        const glm::mat4& projection,
+        bool isBlackHoleLensing,
+        const BlackHoleRenderParams& blackHoleParams
+    );
     
     GLuint compileShader(GLenum type, const char* source);
 };
