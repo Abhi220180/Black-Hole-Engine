@@ -1,4 +1,4 @@
-# Relativistic Black Hole Simulation Engine
+# Black Hole Simulation Engine
 
 A C++17 gravitational simulation that combines:
 - GPU black-hole lensing & accretion-disk rendering via OpenGL compute shader
