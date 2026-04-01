@@ -3,6 +3,7 @@ project(SimulationEngine)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED True)
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 include(CheckLanguage)
 set(SIM_ENABLE_CUDA OFF)

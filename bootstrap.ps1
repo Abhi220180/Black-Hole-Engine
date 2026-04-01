@@ -20,7 +20,7 @@ function Write-Step([string]$Message) {
     Write-Host "==> $Message" -ForegroundColor Cyan
 }
 
-function Ensure-Winget() {
+function Test-WingetAvailable() {
     if (Get-Command winget -ErrorAction SilentlyContinue) {
         return
     }
@@ -28,9 +28,9 @@ function Ensure-Winget() {
 }
 
 function Install-WingetPackage([string]$Id, [string]$DisplayName, [string]$Override = "") {
-    Ensure-Winget
+    Test-WingetAvailable
     Write-Step "Installing $DisplayName ($Id)"
-    $args = @(
+    $wingetArgs = @(
         "install",
         "--id", $Id,
         "-e",
@@ -38,14 +38,14 @@ function Install-WingetPackage([string]$Id, [string]$DisplayName, [string]$Overr
         "--accept-source-agreements"
     )
     if (-not [string]::IsNullOrWhiteSpace($Override)) {
-        $args += @("--override", $Override)
+        $wingetArgs += @("--override", $Override)
     }
 
-    & winget @args
+    & winget @wingetArgs
     return ($LASTEXITCODE -eq 0)
 }
 
-function Ensure-Command([string]$CommandName, [string]$DisplayName, [string]$WingetId) {
+function Install-CommandIfMissing([string]$CommandName, [string]$DisplayName, [string]$WingetId) {
     if (Get-Command $CommandName -ErrorAction SilentlyContinue) {
         return
     }
@@ -95,7 +95,7 @@ function Find-Nvcc() {
     return $null
 }
 
-function Ensure-Vs2022BuildTools() {
+function Get-Vs2022BuildToolsVcVars() {
     $vcvars = Find-VcVars2022
     if ($vcvars) {
         return $vcvars
@@ -119,7 +119,7 @@ function Ensure-Vs2022BuildTools() {
     return $vcvars
 }
 
-function Ensure-CudaToolkit() {
+function Get-CudaNvccPath() {
     $nvcc = Find-Nvcc
     if ($nvcc) {
         return $nvcc
@@ -153,8 +153,8 @@ Write-Step "Project root: $projectRoot"
 Write-Step "Build mode: $Mode ($Config)"
 Write-Step "Build directory: $BuildDir"
 
-Ensure-Command -CommandName "cmake" -DisplayName "CMake" -WingetId "Kitware.CMake"
-Ensure-Command -CommandName "git" -DisplayName "Git" -WingetId "Git.Git"
+Install-CommandIfMissing -CommandName "cmake" -DisplayName "CMake" -WingetId "Kitware.CMake"
+Install-CommandIfMissing -CommandName "git" -DisplayName "Git" -WingetId "Git.Git"
 
 if ($Clean -and (Test-Path -LiteralPath $BuildDir)) {
     Write-Step "Cleaning build directory"
@@ -162,10 +162,10 @@ if ($Clean -and (Test-Path -LiteralPath $BuildDir)) {
 }
 
 if ($Mode -eq "cuda") {
-    $vcvars = Ensure-Vs2022BuildTools
-    $nvcc = Ensure-CudaToolkit
+    $vcvars = Get-Vs2022BuildToolsVcVars
+    $nvcc = Get-CudaNvccPath
 
-    $configureCmd = "cmake -S `"$projectRoot`" -B `"$BuildDir`" -G `"NMake Makefiles`" -DCMAKE_BUILD_TYPE=$Config -DCMAKE_CUDA_COMPILER=`"$nvcc`""
+    $configureCmd = "cmake -S `"$projectRoot`" -B `"$BuildDir`" -G `"NMake Makefiles`" -DCMAKE_BUILD_TYPE=$Config -DCMAKE_CUDA_COMPILER=`"$nvcc`" -DCMAKE_EXPORT_COMPILE_COMMANDS=ON"
     $buildCmd = "cmake --build `"$BuildDir`""
     $exePath = Join-Path $BuildDir "SimulationEngine.exe"
     $runCmd = if ($RunAfterBuild) { "`"$exePath`"" } else { "echo Build complete: $exePath" }
