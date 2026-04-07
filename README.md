@@ -1,6 +1,6 @@
 # Black Hole Simulation Engine
 
-A C++17 gravitational simulation that combines:
+A Simplified C++17 gravitational simulation that combines:
 - GPU black-hole lensing & accretion-disk rendering via OpenGL compute shader
 - N-body particle dynamics w/ CPU integrator or optional CUDA backend
 - Interactive camera controls for free-fly & orbit viewing
